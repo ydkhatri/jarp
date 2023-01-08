@@ -58,10 +58,7 @@ VKCELL = Struct(
         "data_flag" / BitsInteger(4),
         "length" / BitsInteger(28))
         ),
-    "data_offset" / Int32ul, #ByteSwapped (BitStruct( 
-        #"unknown" / BitsInteger(4),
-        #"offset" / BitsInteger(28))
-        #),
+    "data_offset" / Int32ul,
     "type" / Int32ul,
     "flags" / Int16ul,
     "spare" / Int16ul
@@ -173,8 +170,9 @@ def main():
                     print(vk.type, name, data)
 
                 vk_cell = VkCell(vk.flags, name, vk.data_length.length, vk.data_offset, vk.type)
-                vk_objects[start_pos - 4100] = vk_cell
-                #break
+                vk.data = data
+                vk_objects[start_pos - 4096] = vk_cell
+
             elif match.group(0)[2:3] == b'n':
                 nk_data = f.read(size)
                 nk = NKCELL.parse(nk_data)
@@ -184,12 +182,26 @@ def main():
                     nk_cell = NkCell(nk.flags, nk.last_write_time, nk.parent_cell_offset, nk.subkey_count_stable,
                                     nk.subkey_list_offset_stable, nk.value_count, nk.value_list_offset,
                                     nk.security_key_offset, name)
-                    nk_objects[start_pos - 4100] = nk_cell
+                    nk_objects[start_pos - 4096] = nk_cell
 
-    print(len(nk_objects), len(vk_objects))
+    print("NK objects =", len(nk_objects), ", VK objects =", len(vk_objects))
 
-    # Try to read values
+    # Try to get parents
+    for address, nk in nk_objects.items():
+        nk.path = FindPath(nk_objects, nk, '')
+        print(f'{nk.path}/{nk.name}')
+
     
+def FindPath(objects, node, path):
+    parent_node = objects.get(node.parent_cell_offset, None)
+    if parent_node:
+        if path:
+            path = parent_node.name + '/' + path
+        else:
+            path = parent_node.name
+        path = FindPath(objects, parent_node, path)
+    
+    return path
 
 if __name__ == "__main__":
     main()
