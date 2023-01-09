@@ -4,14 +4,15 @@
 Recover registry records from partially overwritten
 registry hives.
 
-Scan for VK records, record offsets in dict,
-then scan for parent NK records.
+Does not scan SK (security) records yet.
 
 """
 
 import argparse
+import codecs
 import construct
 import datetime
+import enum
 import os
 import mmap
 import re
@@ -21,6 +22,24 @@ import sys
 
 from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
+from enum import IntEnum
+
+rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
+
+class RegTypes(IntEnum):
+    RegNone = 0
+    RegSZ = 1
+    RegExpandSZ = 2
+    RegBin = 3
+    RegDWord = 4
+    RegBigEndian = 5
+    RegLink = 6
+    RegMultiSZ = 7
+    RegResourceList = 8
+    RegFullResourceDescriptor = 9
+    RegResourceRequirementsList = 0xA
+    RegQWord = 0xB
+    RegFileTime = 0x10
 
 NKCELL = Struct(
     "size" / Int32sl,
@@ -62,7 +81,6 @@ VKCELL = Struct(
     "type" / Int32ul,
     "flags" / Int16ul,
     "spare" / Int16ul
-
     # followed by Name string
     # followed by Padding to defined size (stored as -ve)
 )
@@ -82,7 +100,6 @@ class NkCell:
         self.name = name
         self.path = ''
 
-
 class VkCell:
     def __init__(self, flags, name, data_length, data_offset, value_type) -> None:
         self.flags = flags
@@ -91,7 +108,7 @@ class VkCell:
         self.data_offset = data_offset
         self.value_type = value_type
         self.value = None
-
+        self.nk_parent = None
 
 def ReadWinFileTime(win64_timestamp): # FILETIME is 100ns ticks since 1601-1-1
     '''Returns datetime object, or empty string upon error'''
@@ -141,36 +158,40 @@ def main():
                     name = ''
                 #print(f"name = {name}")
                 data = None
+                data_interpreted = None
 
                 if vk.data_length.length > 0:
 
                     if vk.data_length.data_flag & 8 == 8: # data is stored in data_offset
                         data = vk_data[12:16]
                     elif vk.data_offset > 0 and \
-                            (vk.data_offset + 4100) < file_size: # Can jump to data and read it now! Checks needed.
-                        if vk.type in (1, 2, 3, 7, 11): # RegSZ, expandsz, bin, multisz, qword
+                            (vk.data_offset + 4096 + vk.data_length.length) <= file_size: # Can jump to data and read it now! Checks needed.
+                        if vk.type in (RegTypes.RegSZ, RegTypes.RegExpandSZ, RegTypes.RegBin, RegTypes.RegMultiSZ, RegTypes.RegQWord): # types 1, 2, 3, 7, 11
                             f.seek(4096 + vk.data_offset + 4)
                             data = f.read(vk.data_length.length)
-                        elif vk.type == 4: # DWORD
+                        elif vk.type == RegTypes.RegDWord: # type 4
                             f.seek(4096 + vk.data_offset)
                             data = f.read(vk.data_length.length)
                     
                     if data:
-                        if vk.type in (1, 2, 7): # TODO multisz
+                        if vk.type == RegTypes.RegBin:
+                            data_interpreted = data
+                        elif vk.type in (RegTypes.RegSZ, RegTypes.RegExpandSZ): # TODO multisz
                             data_interpreted = data.decode('UTF-16LE', 'ignore')
                             #print('str ', data_interpreted)
-                        elif vk.type == 7:
+                        elif vk.type == RegTypes.RegMultiSZ: # 7
                             data_interpreted = data
-                        elif vk.type == 4:
+                        elif vk.type == RegTypes.RegDWord: # 4
                             data_interpreted = struct.unpack('<I', data[0:4])[0]
                             #print('int ', data_interpreted)
-                        elif vk.type == 11: # qword
+                        elif vk.type == RegTypes.RegQWord: # 11
                             data_interpreted = struct.unpack('<Q', data[0:8])[0]
                 if vk.type not in (0, 1, 2, 3, 4, 7, 11):
                     print(vk.type, name, data)
 
                 vk_cell = VkCell(vk.flags, name, vk.data_length.length, vk.data_offset, vk.type)
-                vk.data = data
+                #vk.data = data
+                vk_cell.value = data_interpreted
                 vk_objects[start_pos - 4096] = vk_cell
 
             elif match.group(0)[2:3] == b'n':
@@ -184,14 +205,47 @@ def main():
                                     nk.security_key_offset, name)
                     nk_objects[start_pos - 4096] = nk_cell
 
-    print("NK objects =", len(nk_objects), ", VK objects =", len(vk_objects))
+        print("NK objects =", len(nk_objects), ", VK objects =", len(vk_objects))
 
-    # Try to get parents
-    for address, nk in nk_objects.items():
-        nk.path = FindPath(nk_objects, nk, '')
-        print(f'{nk.path}/{nk.name}')
+        # Try to get parents
+        for address, nk in nk_objects.items():
+            nk.path = FindPath(nk_objects, nk, '')
+            print(f'{nk.path}/{nk.name}')
 
-    
+        # For each nk, go to value_list_offset  and read value_count items, each item is offset to vk
+        p = 0
+        c = 0
+        for address, nk in nk_objects.items():
+            if nk.value_count > 0:
+                offset = nk.value_list_offset
+                if offset > 0 and (offset + 4096 + 4*nk.value_count) < file_size:
+                    f.seek(offset + 4096)
+                    data = f.read(4 + (nk.value_count * 4))
+                    size = struct.unpack('<i', data[0:4])[0]
+                    if size >= -3 or (size + len(data) >= 8): # size is -ve, difference can't be more than 8 bytes!
+                        continue
+                    offsets = struct.unpack(f'<{nk.value_count}I', data[4:])
+                    
+                    for offset in offsets:
+                        vk = vk_objects.get(offset, None)
+                        if vk:
+                            vk.nk_parent = nk
+                            p += 1
+                        else:
+                            print(f'Not present VK @ {offset}')
+                            c += 1
+
+        orphan_count = 0
+        for address, vk in vk_objects.items():
+            if vk.nk_parent is None:
+                orphan_count += 1
+            else:
+                if re.search('UserAssist/{[^}]*}/Count', vk.nk_parent.path + '/' + vk.nk_parent.name):
+                    print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', rot13(vk.name), RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
+                else:
+                    print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', vk.name, RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
+        print(f"Located path for {p} vk entries, {orphan_count} vk are orphan, {c} vk not present in file")
+
 def FindPath(objects, node, path):
     parent_node = objects.get(node.parent_cell_offset, None)
     if parent_node:
