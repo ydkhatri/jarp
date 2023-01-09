@@ -24,6 +24,8 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
+__VERSION = 0.4
+
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
 class RegTypes(IntEnum):
