@@ -10,21 +10,18 @@ Does not scan SK (security) records yet.
 
 import argparse
 import codecs
-import construct
 import datetime
-import enum
 import os
 import mmap
 import re
 import sqlite3
 import struct
-import sys
 
 from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = 0.4
+__VERSION = 0.5
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -125,9 +122,49 @@ def ReadWinFileTime(win64_timestamp): # FILETIME is 100ns ticks since 1601-1-1
     return ''
 
 def main():
-    input_path = sys.argv[1]
-    output_path = sys.argv[2]
+    info =  f"\nJARP version {__VERSION}\n (c) Yogesh Khatri 2023 @swiftforensics\n"
+    description = 'Just Another (broken) Registry Parser (JARP) was created to read \n'\
+        'registry files that were corrupted and/or encrypted by ransomware.\n'\
+        'JARP will write all recovered keys & values to an sqlite database'
+    parser = argparse.ArgumentParser(
+        description=description, epilog=info, 
+        formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('reg_path', help='Path to ESE database file')
+    parser.add_argument('-o', '--output_path', help='Output file name and path')
+    
+    args = parser.parse_args()
 
+    input_path = args.reg_path
+    output_path = args.output_path
+
+    # Check inputs
+    try:
+        if os.path.exists(input_path) and os.path.isfile(input_path):
+            pass
+        else:
+            print("ESE path is not valid! Path provided was {}".format(input_path))
+            print("Exiting..")
+            return
+    except (IOError, OSError) as ex:
+        print("Unknown error with ese db path. Error was ".format(str(ex)))
+        print("Exiting..")
+        return
+
+    if not output_path:
+        output_path = input_path + '.sqlite.db'
+
+    if os.path.exists(output_path):
+        print ("File {} already exists, trying to delete it.".format(output_path))
+        try:
+            os.remove(output_path)
+        except OSError as ex:
+            print("Failed to delete existing file {} \nError was {}".format(output_path, str(ex)))
+            print("Exiting..")
+            return
+
+    RecoverRegToSqlite(input_path, output_path)
+
+def RecoverRegToSqlite(input_path, output_path):
     all_pattern = b'\xFF\xFF(v|n)k'
 
     vk_objects = {}
