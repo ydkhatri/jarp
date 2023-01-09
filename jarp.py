@@ -101,13 +101,13 @@ class NkCell:
         self.path = ''
 
 class VkCell:
-    def __init__(self, flags, name, data_length, data_offset, value_type) -> None:
+    def __init__(self, flags, name, data_length, data_offset, value_type, value) -> None:
         self.flags = flags
         self.name = name
         self.data_length = data_length
         self.data_offset = data_offset
         self.value_type = value_type
-        self.value = None
+        self.value = value
         self.nk_parent = None
 
 def ReadWinFileTime(win64_timestamp): # FILETIME is 100ns ticks since 1601-1-1
@@ -126,9 +126,6 @@ def main():
     input_path = sys.argv[1]
     output_path = sys.argv[2]
 
-    nk_pattern = b'\xFF\xFFnk'
-    vk_pattern = b'\xFF\xFFvk'
-
     all_pattern = b'\xFF\xFF(v|n)k'
 
     vk_objects = {}
@@ -142,21 +139,18 @@ def main():
             mm = mmap.mmap(f.fileno(), 0, prot=mmap.PROT_READ)
 
         for match in re.finditer(all_pattern, mm):
-            #print(match)
             start_pos = match.start() - 2
             f.seek(start_pos)
             size = -struct.unpack("<i", f.read(4))[0]
-            #print(f"0x{size:X}")
             f.seek(start_pos)
             if match.group(0)[2:3] == b'v':
                 vk_data = f.read(size)
                 vk = VKCELL.parse(vk_data)
-                #print(vk)
                 if vk.name_length > 0:
                     name = vk_data[24 : 24 + vk.name_length].decode('utf8')
                 else:
                     name = ''
-                #print(f"name = {name}")
+
                 data = None
                 data_interpreted = None
 
@@ -165,7 +159,7 @@ def main():
                     if vk.data_length.data_flag & 8 == 8: # data is stored in data_offset
                         data = vk_data[12:16]
                     elif vk.data_offset > 0 and \
-                            (vk.data_offset + 4096 + vk.data_length.length) <= file_size: # Can jump to data and read it now! Checks needed.
+                        (vk.data_offset + 4096 + vk.data_length.length) <= file_size:
                         if vk.type in (RegTypes.RegSZ, RegTypes.RegExpandSZ, RegTypes.RegBin, RegTypes.RegMultiSZ, RegTypes.RegQWord): # types 1, 2, 3, 7, 11
                             f.seek(4096 + vk.data_offset + 4)
                             data = f.read(vk.data_length.length)
@@ -176,11 +170,11 @@ def main():
                     if data:
                         if vk.type == RegTypes.RegBin:
                             data_interpreted = data
-                        elif vk.type in (RegTypes.RegSZ, RegTypes.RegExpandSZ): # TODO multisz
+                        elif vk.type in (RegTypes.RegSZ, RegTypes.RegExpandSZ):
                             data_interpreted = data.decode('UTF-16LE', 'ignore')
                             #print('str ', data_interpreted)
                         elif vk.type == RegTypes.RegMultiSZ: # 7
-                            data_interpreted = data
+                            data_interpreted = data.decode('UTF-16LE', 'ignore')#.replace('\x00', '\n').rstrip('\n')
                         elif vk.type == RegTypes.RegDWord: # 4
                             data_interpreted = struct.unpack('<I', data[0:4])[0]
                             #print('int ', data_interpreted)
@@ -189,9 +183,7 @@ def main():
                 if vk.type not in (0, 1, 2, 3, 4, 7, 11):
                     print(vk.type, name, data)
 
-                vk_cell = VkCell(vk.flags, name, vk.data_length.length, vk.data_offset, vk.type)
-                #vk.data = data
-                vk_cell.value = data_interpreted
+                vk_cell = VkCell(vk.flags, name, vk.data_length.length, vk.data_offset, vk.type, data_interpreted)
                 vk_objects[start_pos - 4096] = vk_cell
 
             elif match.group(0)[2:3] == b'n':
@@ -199,7 +191,6 @@ def main():
                 nk = NKCELL.parse(nk_data)
                 if nk.name_length > 0:
                     name = nk_data[80 : 80 + nk.name_length].decode('utf8')
-                    #print(f"timestamp = {ReadWinFileTime(nk.last_write_time)} name = {name}")
                     nk_cell = NkCell(nk.flags, nk.last_write_time, nk.parent_cell_offset, nk.subkey_count_stable,
                                     nk.subkey_list_offset_stable, nk.value_count, nk.value_list_offset,
                                     nk.security_key_offset, name)
@@ -213,8 +204,8 @@ def main():
             print(f'{nk.path}/{nk.name}')
 
         # For each nk, go to value_list_offset  and read value_count items, each item is offset to vk
-        p = 0
-        c = 0
+        parent_present_count = 0
+        mising_vk_count = 0
         for address, nk in nk_objects.items():
             if nk.value_count > 0:
                 offset = nk.value_list_offset
@@ -230,10 +221,9 @@ def main():
                         vk = vk_objects.get(offset, None)
                         if vk:
                             vk.nk_parent = nk
-                            p += 1
+                            parent_present_count += 1
                         else:
-                            print(f'Not present VK @ {offset}')
-                            c += 1
+                            mising_vk_count += 1
 
         orphan_count = 0
         for address, vk in vk_objects.items():
@@ -244,9 +234,12 @@ def main():
                     print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', rot13(vk.name), RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
                 else:
                     print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', vk.name, RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
-        print(f"Located path for {p} vk entries, {orphan_count} vk are orphan, {c} vk not present in file")
+        print(f"Located path for {parent_present_count} vk entries, {orphan_count} vk are orphan, {mising_vk_count} vk not present in file")
 
 def FindPath(objects, node, path):
+    if node.flags & 0xC == 0xC:
+        # node is root
+        return path
     parent_node = objects.get(node.parent_cell_offset, None)
     if parent_node:
         if path:
@@ -254,6 +247,11 @@ def FindPath(objects, node, path):
         else:
             path = parent_node.name
         path = FindPath(objects, parent_node, path)
+    else:
+        if path:
+            path = '**UNKNOWN**/' + path
+        else:
+            path = '**UNKNOWN**'
     
     return path
 
