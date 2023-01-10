@@ -21,7 +21,7 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = 0.5
+__VERSION = 0.6
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -85,9 +85,10 @@ VKCELL = Struct(
 )
 
 class NkCell:
+    id = 1
     def __init__(self, flags, last_write_time, parent_cell_offset, 
                 subkey_count_stable, subkey_list_offset_stable, value_count,
-                value_list_offset, security_key_offset, name) -> None:
+                value_list_offset, security_key_offset, name, file_offset) -> None:
         self.flags = flags
         self.last_write_time = last_write_time
         self.parent_cell_offset = parent_cell_offset
@@ -98,15 +99,20 @@ class NkCell:
         self.security_key_offset = security_key_offset
         self.name = name
         self.path = ''
+        self.file_offset = file_offset
+        # assign unique id for DB
+        self.id = NkCell.id
+        NkCell.id += 1
 
 class VkCell:
-    def __init__(self, flags, name, data_length, data_offset, value_type, value) -> None:
+    def __init__(self, flags, name, data_length, data_offset, value_type, value, file_offset) -> None:
         self.flags = flags
         self.name = name
         self.data_length = data_length
         self.data_offset = data_offset
         self.value_type = value_type
         self.value = value
+        self.file_offset = file_offset
         self.nk_parent = None
 
 def ReadWinFileTime(win64_timestamp): # FILETIME is 100ns ticks since 1601-1-1
@@ -122,15 +128,18 @@ def ReadWinFileTime(win64_timestamp): # FILETIME is 100ns ticks since 1601-1-1
     return ''
 
 def main():
-    info =  f"\nJARP version {__VERSION}\n (c) Yogesh Khatri 2023 @swiftforensics\n"
-    description = 'Just Another (broken) Registry Parser (JARP) was created to read \n'\
-        'registry files that were corrupted and/or encrypted by ransomware.\n'\
-        'JARP will write all recovered keys & values to an sqlite database'
+    description =  f"\nJARP version {__VERSION}\n (c) Yogesh Khatri 2023 @swiftforensics\n"
+    epilog = 'Just Another (broken) Registry Parser (JARP) was created to read \n'\
+            'registry files that were partially corrupted and/or encrypted. \n'\
+            'JARP will write all recovered keys & values to an sqlite\n'\
+            'database and also output data on the console (if needed).\n'
     parser = argparse.ArgumentParser(
-        description=description, epilog=info, 
+        description=description, epilog=epilog, 
         formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('reg_path', help='Path to ESE database file')
     parser.add_argument('-o', '--output_path', help='Output file name and path')
+    parser.add_argument('-p', '--print_to_screen', action='store_true', help='Print output to screen')
+    parser.add_argument('-n', '--no_UA_decode', action='store_true', help='Do NOT decode rot13 for UserAssist (Default is to decode)')
     
     args = parser.parse_args()
 
@@ -162,9 +171,9 @@ def main():
             print("Exiting..")
             return
 
-    RecoverRegToSqlite(input_path, output_path)
+    RecoverRegToSqlite(input_path, output_path, not args.no_UA_decode, args.print_to_screen)
 
-def RecoverRegToSqlite(input_path, output_path):
+def RecoverRegToSqlite(input_path, output_path, user_assist_decode, print_to_screen=False):
     all_pattern = b'\xFF\xFF(v|n)k'
 
     vk_objects = {}
@@ -211,18 +220,16 @@ def RecoverRegToSqlite(input_path, output_path):
                             data_interpreted = data
                         elif vk.type in (RegTypes.RegSZ, RegTypes.RegExpandSZ):
                             data_interpreted = data.decode('UTF-16LE', 'ignore')
-                            #print('str ', data_interpreted)
                         elif vk.type == RegTypes.RegMultiSZ: # 7
                             data_interpreted = data.decode('UTF-16LE', 'ignore')#.replace('\x00', '\n').rstrip('\n')
                         elif vk.type == RegTypes.RegDWord: # 4
                             data_interpreted = struct.unpack('<I', data[0:4])[0]
-                            #print('int ', data_interpreted)
                         elif vk.type == RegTypes.RegQWord: # 11
                             data_interpreted = struct.unpack('<Q', data[0:8])[0]
                 if vk.type not in (0, 1, 2, 3, 4, 7, 11):
-                    print(vk.type, name, data)
+                    print("Type not seen before", vk.type, name, data)
 
-                vk_cell = VkCell(vk.flags, name, vk.data_length.length, vk.data_offset, vk.type, data_interpreted)
+                vk_cell = VkCell(vk.flags, name, vk.data_length.length, vk.data_offset, vk.type, data_interpreted, start_pos)
                 vk_objects[start_pos - 4096] = vk_cell
 
             elif match.group(0)[2:3] == b'n':
@@ -232,17 +239,17 @@ def RecoverRegToSqlite(input_path, output_path):
                     name = nk_data[80 : 80 + nk.name_length].decode('utf8')
                     nk_cell = NkCell(nk.flags, nk.last_write_time, nk.parent_cell_offset, nk.subkey_count_stable,
                                     nk.subkey_list_offset_stable, nk.value_count, nk.value_list_offset,
-                                    nk.security_key_offset, name)
+                                    nk.security_key_offset, name, start_pos)
                     nk_objects[start_pos - 4096] = nk_cell
 
-        print("NK objects =", len(nk_objects), ", VK objects =", len(vk_objects))
+        print(f"Read {len(nk_objects)} NK objects and {len(vk_objects)} VK objects")
 
         # Try to get parents
         for address, nk in nk_objects.items():
             nk.path = FindPath(nk_objects, nk, '')
-            print(f'{nk.path}/{nk.name}')
+            #print(f'{nk.path}/{nk.name}')
 
-        # For each nk, go to value_list_offset  and read value_count items, each item is offset to vk
+        # For each nk, go to value_list_offset and read value_count items, each item is offset to vk
         parent_present_count = 0
         mising_vk_count = 0
         for address, nk in nk_objects.items():
@@ -264,16 +271,96 @@ def RecoverRegToSqlite(input_path, output_path):
                         else:
                             mising_vk_count += 1
 
-        orphan_count = 0
-        for address, vk in vk_objects.items():
-            if vk.nk_parent is None:
-                orphan_count += 1
-            else:
-                if re.search('UserAssist/{[^}]*}/Count', vk.nk_parent.path + '/' + vk.nk_parent.name):
-                    print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', rot13(vk.name), RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
+        # Add to SQLITE db
+        if AddToSqliteDb(output_path, vk_objects, nk_objects, user_assist_decode):
+            print('Sqlite db written!')
+        # PRINT results
+        if print_to_screen:
+            orphan_count = 0
+            for address, vk in vk_objects.items():
+                if vk.nk_parent is None:
+                    orphan_count += 1
                 else:
-                    print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', vk.name, RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
-        print(f"Located path for {parent_present_count} vk entries, {orphan_count} vk are orphan, {mising_vk_count} vk not present in file")
+                    if user_assist_decode and re.search('UserAssist/{[^}]*}/Count', vk.nk_parent.path + '/' + vk.nk_parent.name):
+                        print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', rot13(vk.name), RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
+                    else:
+                        print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', vk.name, RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
+            print(f"Located path for {parent_present_count} vk entries, {orphan_count} vk are orphan, {mising_vk_count} vk not present in file")
+
+def OpenSqliteDbConn(sqlite_path):
+    try:
+        conn = sqlite3.connect(sqlite_path)
+        return conn
+    except Exception as ex:
+        print('Failed to create sqlite db at {}'.format(sqlite_path))    
+    return None
+
+def ExecuteQuery(cursor, query):
+    try:
+        cursor.execute(query)
+        return True
+    except sqlite3.Error as ex:
+        print('Failed to execute query {query}')
+        print('Error was', str(ex))
+    return False
+
+def insert_rows_into_db(cursor, exec_many_query, table_name, rows):
+    try:
+        cursor.executemany(exec_many_query, rows)
+    except:
+        print(f'Error inserting data to sqlite db table "{table_name}"')
+
+def AddToSqliteDb(sqlite_path, vk_objects, nk_objects, user_assist_decode):
+    conn = OpenSqliteDbConn(sqlite_path)
+    if not conn:
+        return False
+
+    c = conn.cursor()
+    createQuery = 'CREATE TABLE IF NOT EXISTS "RegKeys" (Id INTEGER NOT NULL PRIMARY KEY, Name TEXT, Path TEXT, LastWriteTime TEXT, SubkeyCount INTEGER, ValueCount INTEGER, NKoffset INTEGER)'
+    if not ExecuteQuery(c, createQuery):
+        return False
+
+    createQuery = 'CREATE TABLE IF NOT EXISTS "RegValues" (Name TEXT, KeyId INTEGER, Type TEXT, ValueStr TEXT, ValueBin BLOB, ValueInt INTEGER, VKoffset INTEGER)'
+    if not ExecuteQuery(c, createQuery):
+        return False
+
+    add_keys_query = 'INSERT INTO "RegKeys" VALUES (?,?,?,?,?,?,?)'
+    rows = []
+    for _, nk in nk_objects.items():
+        rows.append((nk.id, nk.name, nk.path, ReadWinFileTime(nk.last_write_time), nk.subkey_count_stable, nk.value_count, nk.file_offset))
+    insert_rows_into_db(c, add_keys_query, 'RegKeys', rows)
+
+    add_values_query = 'INSERT INTO "RegValues" VALUES (?,?,?,?,?,?,?)'
+    rows = []
+    for _, vk in vk_objects.items():
+        value_str = None
+        value_blob = None
+        value_int = None
+        name = vk.name
+        id = -1            
+        if vk.nk_parent:
+            id = vk.nk_parent.id
+            if user_assist_decode and re.search('UserAssist/{[^}]*}/Count', vk.nk_parent.path + '/' + vk.nk_parent.name):
+                name = rot13(name)
+        if vk.value:
+            if vk.value_type in (RegTypes.RegSZ, RegTypes.RegExpandSZ, RegTypes.RegMultiSZ):
+                value_str = vk.value.rstrip('\x00')
+            elif vk.value_type in (RegTypes.RegQWord, RegTypes.RegDWord):
+                value_int = vk.value
+            elif vk.value_type == RegTypes.RegBin:
+                value_blob = vk.value
+        rows.append((name, id, RegTypes(vk.value_type).name, value_str, value_blob, value_int, vk.file_offset))
+    insert_rows_into_db(c, add_values_query, 'RegValues', rows)
+    
+    conn.commit()
+    conn.close()
+    return True
+
+def insert_rows_into_db(cursor, exec_many_query, table_name, rows):
+    try:
+        cursor.executemany(exec_many_query.format(table_name), rows)
+    except sqlite3.Error as ex:
+        print(f'Error inserting data to sqlite db table "{table_name}"')
 
 def FindPath(objects, node, path):
     if node.flags & 0xC == 0xC:
