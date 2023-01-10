@@ -21,7 +21,7 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = "0.6.1"
+__VERSION = "0.6.2"
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -136,15 +136,27 @@ def main():
     parser = argparse.ArgumentParser(
         description=description, epilog=epilog, 
         formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument('reg_path', help='Path to ESE database file')
+    parser.add_argument('reg_path', help='Path to registry hive (file)')
     parser.add_argument('-o', '--output_path', help='Output file name and path')
     parser.add_argument('-p', '--print_to_screen', action='store_true', help='Print output to screen')
     parser.add_argument('-n', '--no_UA_decode', action='store_true', help='Do NOT decode rot13 for UserAssist (Default is to decode)')
-    
+    parser.add_argument('-f', '--filter', help='Filter keys and values. Eg: -f "UserAssist"')
+    parser.add_argument('-r', '--regex_filter', help='Filter keys and values with regex. Eg: -f "User[a-zA-Z]+"')
     args = parser.parse_args()
 
     input_path = args.reg_path
     output_path = args.output_path
+    filter = None
+
+    if args.filter or args.regex_filter:
+        if not args.print_to_screen:
+            print('[!] Cannot use filter without -p (--print_to_screen) option. ')
+            print('[!] Exiting..')
+            return
+        if args.filter:
+            filter = re.compile(re.escape(args.filter), re.IGNORECASE)
+        elif args.regex_filter:
+            filter = re.compile(args.filter)
 
     # Check inputs
     try:
@@ -155,15 +167,18 @@ def main():
             print("[!] Exiting..")
             return
     except (IOError, OSError) as ex:
-        print("[!] Unknown error with ese db path. Error was {}".format(str(ex)))
+        print("[!] Unknown error accessing registry path. Error was {}".format(str(ex)))
         print("[!] Exiting..")
         return
 
-    if not output_path:
-        output_path = input_path + '.sqlite.db'
+    if not output_path and not args.print_to_screen:
+        #output_path = input_path + '.sqlite.db'
+        print("[!] Either provide an output_path (-o) to save to sqlite, or select print_to_screen (-p) option")
+        print("[!] Exiting..")
+        return
 
-    if os.path.exists(output_path):
-        print ("[+] File {} already exists, trying to delete it.".format(output_path))
+    if output_path and os.path.exists(output_path):
+        print ("[-] File {} already exists, trying to delete it.".format(output_path))
         try:
             os.remove(output_path)
         except OSError as ex:
@@ -171,9 +186,9 @@ def main():
             print("[!] Exiting..")
             return
 
-    RecoverRegToSqlite(input_path, output_path, not args.no_UA_decode, args.print_to_screen)
+    ProcessRegistryHive(input_path, output_path, not args.no_UA_decode, args.print_to_screen, filter)
 
-def RecoverRegToSqlite(input_path, output_path, user_assist_decode, print_to_screen=False):
+def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_screen, filter):
     all_pattern = b'\xFF\xFF(v|n)k'
 
     vk_objects = {}
@@ -272,8 +287,10 @@ def RecoverRegToSqlite(input_path, output_path, user_assist_decode, print_to_scr
                             mising_vk_count += 1
 
         # Add to SQLITE db
-        if AddToSqliteDb(output_path, vk_objects, nk_objects, user_assist_decode):
-            print('[+] Sqlite db written')
+        if output_path:
+            add_to_sqlite_db(output_path, vk_objects, nk_objects, user_assist_decode):
+            print('[+] Sqlite db writing completed')
+
         # PRINT results
         if print_to_screen:
             orphan_count = 0
@@ -281,13 +298,29 @@ def RecoverRegToSqlite(input_path, output_path, user_assist_decode, print_to_scr
                 if vk.nk_parent is None:
                     orphan_count += 1
                 else:
+                    value_name = vk.name
                     if user_assist_decode and re.search('UserAssist/{[^}]*}/Count', vk.nk_parent.path + '/' + vk.nk_parent.name):
-                        print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', rot13(vk.name), RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
-                    else:
-                        print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', vk.name, RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
+                        value_name = rot13(value_name)
+                    value = vk.value
+                    if vk.value_type == RegTypes.RegMultiSZ:
+                        value = vk.value.rstrip('\x00')
+                    key = f'{vk.nk_parent.path}/{vk.nk_parent.name}'
+                    if filter is None or \
+                        (Filter(filter, key) or \
+                            Filter(filter, value_name) or \
+                            (vk.value_type in (RegTypes.RegExpandSZ, RegTypes.RegSZ, RegTypes.RegMultiSZ) and \
+                            Filter(filter, value))\
+                        ):
+                        print(key, value_name, RegTypes(vk.value_type).name, value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
             print(f"[+] Located path for {parent_present_count} vk entries, {orphan_count} vk are orphan, {mising_vk_count} vk not present in file")
 
-def OpenSqliteDbConn(sqlite_path):
+def Filter(compiled_expression, str):
+    if str:
+        if compiled_expression.search(str):
+            return True
+    return False
+
+def open_sqlite_db_conn(sqlite_path):
     try:
         conn = sqlite3.connect(sqlite_path)
         return conn
@@ -295,7 +328,7 @@ def OpenSqliteDbConn(sqlite_path):
         print('[!] Failed to create sqlite db at {}'.format(sqlite_path))    
     return None
 
-def ExecuteQuery(cursor, query):
+def execute_query(cursor, query):
     try:
         cursor.execute(query)
         return True
@@ -310,25 +343,26 @@ def insert_rows_into_db(cursor, exec_many_query, table_name, rows):
     except:
         print(f'[!] Error inserting data to sqlite db table "{table_name}"')
 
-def AddToSqliteDb(sqlite_path, vk_objects, nk_objects, user_assist_decode):
-    conn = OpenSqliteDbConn(sqlite_path)
+def add_to_sqlite_db(sqlite_path, vk_objects, nk_objects, user_assist_decode):
+    conn = open_sqlite_db_conn(sqlite_path)
     if not conn:
         return False
+    print(f'[+] Created sqlite database at {sqlite_path}')
 
-    c = conn.cursor()
+    cursor = conn.cursor()
     createQuery = 'CREATE TABLE IF NOT EXISTS "RegKeys" (Id INTEGER NOT NULL PRIMARY KEY, Name TEXT, Path TEXT, LastWriteTime TEXT, SubkeyCount INTEGER, ValueCount INTEGER, NKoffset INTEGER)'
-    if not ExecuteQuery(c, createQuery):
+    if not execute_query(cursor, createQuery):
         return False
 
     createQuery = 'CREATE TABLE IF NOT EXISTS "RegValues" (Name TEXT, KeyId INTEGER, Type TEXT, ValueStr TEXT, ValueBin BLOB, ValueInt INTEGER, VKoffset INTEGER)'
-    if not ExecuteQuery(c, createQuery):
+    if not execute_query(cursor, createQuery):
         return False
 
     add_keys_query = 'INSERT INTO "RegKeys" VALUES (?,?,?,?,?,?,?)'
     rows = []
     for _, nk in nk_objects.items():
         rows.append((nk.id, nk.name, nk.path, ReadWinFileTime(nk.last_write_time), nk.subkey_count_stable, nk.value_count, nk.file_offset))
-    insert_rows_into_db(c, add_keys_query, 'RegKeys', rows)
+    insert_rows_into_db(cursor, add_keys_query, 'RegKeys', rows)
 
     add_values_query = 'INSERT INTO "RegValues" VALUES (?,?,?,?,?,?,?)'
     rows = []
@@ -350,7 +384,7 @@ def AddToSqliteDb(sqlite_path, vk_objects, nk_objects, user_assist_decode):
             elif vk.value_type == RegTypes.RegBin:
                 value_blob = vk.value
         rows.append((name, id, RegTypes(vk.value_type).name, value_str, value_blob, value_int, vk.file_offset))
-    insert_rows_into_db(c, add_values_query, 'RegValues', rows)
+    insert_rows_into_db(cursor, add_values_query, 'RegValues', rows)
     
     # create view
     view_query = """
@@ -368,6 +402,8 @@ def AddToSqliteDb(sqlite_path, vk_objects, nk_objects, user_assist_decode):
         WHERE NOT (RegValues.Name LIKE "" and Type LIKE "RegSZ" and RegValues.ValueStr LIKE "")
         ORDER BY KeyPath
     """
+    execute_query(cursor, view_query)
+
     conn.commit()
     conn.close()
     return True
