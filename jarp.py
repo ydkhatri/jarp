@@ -21,7 +21,7 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = 0.6
+__VERSION = "0.6.1"
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -124,7 +124,7 @@ def ReadWinFileTime(win64_timestamp): # FILETIME is 100ns ticks since 1601-1-1
 
             return datetime.datetime(1601, 1, 1) + datetime.timedelta(microseconds=win64_timestamp/10)
         except Exception as ex:
-            print("ReadWinFileTime() Failed to convert timestamp from value " + str(win64_timestamp) + " Error was: " + str(ex))
+            print("[!] ReadWinFileTime() Failed to convert timestamp from value " + str(win64_timestamp) + " Error was: " + str(ex))
     return ''
 
 def main():
@@ -151,24 +151,24 @@ def main():
         if os.path.exists(input_path) and os.path.isfile(input_path):
             pass
         else:
-            print("ESE path is not valid! Path provided was {}".format(input_path))
-            print("Exiting..")
+            print("[!] Registry path is not valid! Path provided was {}".format(input_path))
+            print("[!] Exiting..")
             return
     except (IOError, OSError) as ex:
-        print("Unknown error with ese db path. Error was ".format(str(ex)))
-        print("Exiting..")
+        print("[!] Unknown error with ese db path. Error was {}".format(str(ex)))
+        print("[!] Exiting..")
         return
 
     if not output_path:
         output_path = input_path + '.sqlite.db'
 
     if os.path.exists(output_path):
-        print ("File {} already exists, trying to delete it.".format(output_path))
+        print ("[+] File {} already exists, trying to delete it.".format(output_path))
         try:
             os.remove(output_path)
         except OSError as ex:
-            print("Failed to delete existing file {} \nError was {}".format(output_path, str(ex)))
-            print("Exiting..")
+            print("[!] Failed to delete existing file {} \nError was {}".format(output_path, str(ex)))
+            print("[!] Exiting..")
             return
 
     RecoverRegToSqlite(input_path, output_path, not args.no_UA_decode, args.print_to_screen)
@@ -227,7 +227,7 @@ def RecoverRegToSqlite(input_path, output_path, user_assist_decode, print_to_scr
                         elif vk.type == RegTypes.RegQWord: # 11
                             data_interpreted = struct.unpack('<Q', data[0:8])[0]
                 if vk.type not in (0, 1, 2, 3, 4, 7, 11):
-                    print("Type not seen before", vk.type, name, data)
+                    print("[-] Type not seen before", vk.type, name, data)
 
                 vk_cell = VkCell(vk.flags, name, vk.data_length.length, vk.data_offset, vk.type, data_interpreted, start_pos)
                 vk_objects[start_pos - 4096] = vk_cell
@@ -242,7 +242,7 @@ def RecoverRegToSqlite(input_path, output_path, user_assist_decode, print_to_scr
                                     nk.security_key_offset, name, start_pos)
                     nk_objects[start_pos - 4096] = nk_cell
 
-        print(f"Read {len(nk_objects)} NK objects and {len(vk_objects)} VK objects")
+        print(f"[+] Read {len(nk_objects)} NK objects and {len(vk_objects)} VK objects")
 
         # Try to get parents
         for address, nk in nk_objects.items():
@@ -273,7 +273,7 @@ def RecoverRegToSqlite(input_path, output_path, user_assist_decode, print_to_scr
 
         # Add to SQLITE db
         if AddToSqliteDb(output_path, vk_objects, nk_objects, user_assist_decode):
-            print('Sqlite db written!')
+            print('[+] Sqlite db written')
         # PRINT results
         if print_to_screen:
             orphan_count = 0
@@ -285,14 +285,14 @@ def RecoverRegToSqlite(input_path, output_path, user_assist_decode, print_to_scr
                         print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', rot13(vk.name), RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
                     else:
                         print(f'{vk.nk_parent.path}/{vk.nk_parent.name}', vk.name, RegTypes(vk.value_type).name, vk.value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
-            print(f"Located path for {parent_present_count} vk entries, {orphan_count} vk are orphan, {mising_vk_count} vk not present in file")
+            print(f"[+] Located path for {parent_present_count} vk entries, {orphan_count} vk are orphan, {mising_vk_count} vk not present in file")
 
 def OpenSqliteDbConn(sqlite_path):
     try:
         conn = sqlite3.connect(sqlite_path)
         return conn
     except Exception as ex:
-        print('Failed to create sqlite db at {}'.format(sqlite_path))    
+        print('[!] Failed to create sqlite db at {}'.format(sqlite_path))    
     return None
 
 def ExecuteQuery(cursor, query):
@@ -300,15 +300,15 @@ def ExecuteQuery(cursor, query):
         cursor.execute(query)
         return True
     except sqlite3.Error as ex:
-        print('Failed to execute query {query}')
-        print('Error was', str(ex))
+        print('[!] Failed to execute query {query}')
+        print('[!] Error was', str(ex))
     return False
 
 def insert_rows_into_db(cursor, exec_many_query, table_name, rows):
     try:
         cursor.executemany(exec_many_query, rows)
     except:
-        print(f'Error inserting data to sqlite db table "{table_name}"')
+        print(f'[!] Error inserting data to sqlite db table "{table_name}"')
 
 def AddToSqliteDb(sqlite_path, vk_objects, nk_objects, user_assist_decode):
     conn = OpenSqliteDbConn(sqlite_path)
@@ -352,6 +352,22 @@ def AddToSqliteDb(sqlite_path, vk_objects, nk_objects, user_assist_decode):
         rows.append((name, id, RegTypes(vk.value_type).name, value_str, value_blob, value_int, vk.file_offset))
     insert_rows_into_db(c, add_values_query, 'RegValues', rows)
     
+    # create view
+    view_query = """
+        CREATE VIEW View1 AS
+        SELECT
+            CASE KeyId
+                WHEN -1 THEN "Unknown-ORPHANED"
+                ELSE (RegKeys.Path || '/' || RegKeys.Name) END KeyPath, 
+            CASE RegValues.Name 
+                WHEN '' THEN '(Default)'
+                ELSE RegValues.Name END ValueName, 
+            Type, ValueStr, ValueBin, ValueInt, 
+            RegKeys.LastWriteTime as KeyLastMod
+        FROM RegValues LEFT JOIN RegKeys ON RegKeys.Id=RegValues.KeyId
+        WHERE NOT (RegValues.Name LIKE "" and Type LIKE "RegSZ" and RegValues.ValueStr LIKE "")
+        ORDER BY KeyPath
+    """
     conn.commit()
     conn.close()
     return True
@@ -360,7 +376,7 @@ def insert_rows_into_db(cursor, exec_many_query, table_name, rows):
     try:
         cursor.executemany(exec_many_query.format(table_name), rows)
     except sqlite3.Error as ex:
-        print(f'Error inserting data to sqlite db table "{table_name}"')
+        print(f'[!] Error inserting data to sqlite db table "{table_name}"')
 
 def FindPath(objects, node, path):
     if node.flags & 0xC == 0xC:
