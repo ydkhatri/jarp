@@ -84,6 +84,20 @@ VKCELL = Struct(
     # followed by Padding to defined size (stored as -ve)
 )
 
+DBCELL = Struct(
+    "size" / Int32sl,
+    "signature" / Const(b"db"),
+    "flags" / Int16ul,
+    "indirect_block_offset" / Int32ul,
+    "unknown" / Int32ul
+)
+
+DBINDIRECTBLOCK = Struct(
+    "size" / Int32sl,
+    "block_offset_1" / Int32ul,
+    "block_offset_2" / Int32ul
+)
+
 class NkCell:
     id = 1
     def __init__(self, flags, last_write_time, parent_cell_offset, 
@@ -188,6 +202,14 @@ def main():
 
     ProcessRegistryHive(input_path, output_path, not args.no_UA_decode, args.print_to_screen, filter)
 
+def read_struct_size(f):
+    """Read 4 bytes as size and return file pointer back to initial position"""
+    pos = f.tell()
+    data = f.read(4)
+    size = -struct.unpack('<i', data)[0]
+    f.seek(pos)
+    return size
+
 def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_screen, filter):
     all_pattern = b'\xFF\xFF(v|n)k'
 
@@ -204,8 +226,7 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
         for match in re.finditer(all_pattern, mm):
             start_pos = match.start() - 2
             f.seek(start_pos)
-            size = -struct.unpack("<i", f.read(4))[0]
-            f.seek(start_pos)
+            size = read_struct_size(f)
             if match.group(0)[2:3] == b'v':
                 vk_data = f.read(size)
                 vk = VKCELL.parse(vk_data)
@@ -222,14 +243,57 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                     if vk.data_length.data_flag & 8 == 8: # data is stored in data_offset
                         data = vk_data[12:16]
                     elif vk.data_offset > 0 and \
-                        (vk.data_offset + 4096 + vk.data_length.length) <= file_size:
-                        if vk.type in (RegTypes.RegSZ, RegTypes.RegExpandSZ, RegTypes.RegBin, RegTypes.RegMultiSZ, RegTypes.RegQWord): # types 1, 2, 3, 7, 11
+                        (vk.data_offset + 4096) < file_size:
+                        if vk.type in (RegTypes.RegSZ, RegTypes.RegExpandSZ, RegTypes.RegMultiSZ, RegTypes.RegQWord): # types 1, 2, 7, 11
                             f.seek(4096 + vk.data_offset + 4)
                             data = f.read(vk.data_length.length)
                         elif vk.type == RegTypes.RegDWord: # type 4
                             f.seek(4096 + vk.data_offset)
                             data = f.read(vk.data_length.length)
-                    
+                        elif vk.type == RegTypes.RegBin:
+                            f.seek(4096 + vk.data_offset)
+                            # check for db record
+                            is_db = False
+                            is_bad = False
+                            if vk.data_length.length > 2000000: # > 2MB is highly unlikely
+                                is_bad = True
+                                data = b''
+                            if vk.data_length.length > 1024: # db wont be used for small records
+                                db_data = f.read(16)
+                                if db_data[4:6] == b'db':
+                                    db = DBCELL.parse(db_data)
+                                    if db.size == -16: # confirm its db
+                                        is_db = True
+                                        to_read = vk.data_length.length
+                                        data = b''
+                                        f.seek(4096  + db.indirect_block_offset)
+                                        ib_data = f.read(16)
+                                        ib = DBINDIRECTBLOCK.parse(ib_data)
+                                        block_offset = ib.block_offset_1
+                                        offset_offset = 4096 + db.indirect_block_offset + 4
+                                        block_count = 1
+                                        while (block_offset < file_size and to_read > 0):
+                                            f.seek(4096  + block_offset)
+                                            size = read_struct_size(f) - 4
+                                            if size < 0:
+                                                # error
+                                                break
+                                            if size <= to_read:
+                                                to_read -= size
+                                                data += f.read(size)
+                                                offset_offset = 4096 + db.indirect_block_offset + 4 + 4*block_count
+                                                f.seek(offset_offset)
+                                                temp_data  = f.read(4)
+                                                block_offset = struct.unpack('<I', temp_data)[0]
+                                                block_count += 1
+                                            else:
+                                                data += f.read(to_read)
+                                                to_read = 0
+                                                break
+
+                            if not is_db and not is_bad:
+                                f.seek(4096 + vk.data_offset + 4)
+                                data = f.read(vk.data_length.length)
                     if data:
                         if vk.type == RegTypes.RegBin:
                             data_interpreted = data
@@ -285,34 +349,45 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                             parent_present_count += 1
                         else:
                             mising_vk_count += 1
+        orphan_count = 0
+        for address, vk in vk_objects.items():
+            if vk.nk_parent is None:
+                orphan_count += 1
+        print(f"[+] Located path for {parent_present_count} vk entries, {orphan_count} vk are orphan, {mising_vk_count} vk not present in file")
 
         # Add to SQLITE db
         if output_path:
-            add_to_sqlite_db(output_path, vk_objects, nk_objects, user_assist_decode):
+            add_to_sqlite_db(output_path, vk_objects, nk_objects, user_assist_decode)
             print('[+] Sqlite db writing completed')
 
         # PRINT results
         if print_to_screen:
-            orphan_count = 0
+            print('KeyPath ValueName RegType KeyLastModifiedDate')
+            count = 0
             for address, vk in vk_objects.items():
                 if vk.nk_parent is None:
-                    orphan_count += 1
+                    key = '**UNKNOWN**'
+                    timestamp = ''
                 else:
-                    value_name = vk.name
-                    if user_assist_decode and re.search('UserAssist/{[^}]*}/Count', vk.nk_parent.path + '/' + vk.nk_parent.name):
-                        value_name = rot13(value_name)
-                    value = vk.value
-                    if vk.value_type == RegTypes.RegMultiSZ:
-                        value = vk.value.rstrip('\x00')
                     key = f'{vk.nk_parent.path}/{vk.nk_parent.name}'
-                    if filter is None or \
-                        (Filter(filter, key) or \
-                            Filter(filter, value_name) or \
-                            (vk.value_type in (RegTypes.RegExpandSZ, RegTypes.RegSZ, RegTypes.RegMultiSZ) and \
-                            Filter(filter, value))\
-                        ):
-                        print(key, value_name, RegTypes(vk.value_type).name, value, f"key_mod_date={ReadWinFileTime(vk.nk_parent.last_write_time)}")
-            print(f"[+] Located path for {parent_present_count} vk entries, {orphan_count} vk are orphan, {mising_vk_count} vk not present in file")
+                    timestamp = ReadWinFileTime(vk.nk_parent.last_write_time)
+                value_name = vk.name
+                if user_assist_decode and re.search('UserAssist/{[^}]*}/Count', key):
+                    value_name = rot13(value_name)
+                value = vk.value
+                if vk.value_type == RegTypes.RegMultiSZ:
+                    value = vk.value.rstrip('\x00')
+                
+                if filter is None or \
+                    (Filter(filter, key) or \
+                        Filter(filter, value_name) or \
+                        (vk.value_type in (RegTypes.RegExpandSZ, RegTypes.RegSZ, RegTypes.RegMultiSZ) and \
+                        Filter(filter, value))\
+                    ):
+                    print(key, value_name, RegTypes(vk.value_type).name, value, f"key_mod_date={timestamp}")
+                    count += 1
+            if filter:
+                print(f'[+] {count} items matched filter "{filter.pattern}"')
 
 def Filter(compiled_expression, str):
     if str:
@@ -371,7 +446,7 @@ def add_to_sqlite_db(sqlite_path, vk_objects, nk_objects, user_assist_decode):
         value_blob = None
         value_int = None
         name = vk.name
-        id = -1            
+        id = -1
         if vk.nk_parent:
             id = vk.nk_parent.id
             if user_assist_decode and re.search('UserAssist/{[^}]*}/Count', vk.nk_parent.path + '/' + vk.nk_parent.name):
