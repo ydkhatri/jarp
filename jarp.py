@@ -21,7 +21,7 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = "0.7"
+__VERSION = "0.7.2"
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -143,7 +143,6 @@ def ReadWinFileTime(win64_timestamp): # FILETIME is 100ns ticks since 1601-1-1
 
 def main():
 
-    #f"\nJARP version {__VERSION}\n (c) Yogesh Khatri 2023 @swiftforensics\n"\
     description =  \
         f"  _  _  _  _ \n"\
         "   //_//_//_/\n"\
@@ -162,7 +161,7 @@ def main():
     parser.add_argument('-n', '--no_UA_decode', action='store_true', help='Do NOT decode rot13 for UserAssist (Default is to decode)')
     parser.add_argument('-f', '--filter', help='Filter keys and values. Eg: -f "UserAssist"')
     parser.add_argument('-r', '--regex_filter', help='Filter keys and values with regex. Eg: -f "User[a-zA-Z]+"')
-    parser.add_argument('-k', '--parse_known_keys', action='store_true', help='Read and parse UserAssist, RecentItems, Terminal Server Client, WordWheelQuery')
+    parser.add_argument('-k', '--parse_known_keys', action='store_true', help='Read and parse UserAssist & RecentItems')
     args = parser.parse_args()
 
     input_path = args.reg_path
@@ -196,9 +195,8 @@ def main():
         print("[!] Exiting..")
         return
 
-    if not output_path and not args.print_to_screen and not args.parse_known_keys:
-        #output_path = input_path + '.sqlite.db'
-        print("[!] Either provide an output_path (-o) to save to sqlite, or select print_to_screen (-p) option, or choose parse_known_keys (-k) option")
+    if not output_path and not args.print_to_screen:
+        print("[!] Either provide an output_path (-o) to save to sqlite, or select print_to_screen (-p) option.")
         print("[!] Exiting..")
         return
 
@@ -369,14 +367,14 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
         # Add to SQLITE db
         if output_path:
             add_to_sqlite_db(output_path, vk_objects, nk_objects, user_assist_decode)
-            print('[+] Sqlite db writing completed')
+            print('[+] Reg data written to Sqlite db')
         
         if parse_known_keys:
-            process_known_keys(nk_objects, vk_objects)
+            process_known_keys(nk_objects, vk_objects, print_to_screen, output_path)
 
         # PRINT results
-        if print_to_screen:
-            print('KeyPath ValueName RegType KeyLastModifiedDate')
+        if print_to_screen and not parse_known_keys:
+            print('KeyPath, ValueName, RegType, KeyLastModifiedDate')
             count = 0
             for address, vk in vk_objects.items():
                 if vk.nk_parent is None:
@@ -398,12 +396,12 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                         (vk.value_type in (RegTypes.RegExpandSZ, RegTypes.RegSZ, RegTypes.RegMultiSZ) and \
                         Filter(filter, value))\
                     ):
-                    print(key, value_name, RegTypes(vk.value_type).name, value, f"key_mod_date={timestamp}")
+                    print(key, value_name, RegTypes(vk.value_type).name, value, f"key_mod_date={timestamp}", sep=", ")
                     count += 1
             if filter:
                 print(f'[+] {count} items matched filter "{filter.pattern}"')
 
-def process_known_keys(nk_objects, vk_objects):
+def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
 
     recent_items_filter = re.compile("{[a-zA-Z0-9\\-]{36}}/RecentItems/{[a-zA-Z0-9\\-]{36}}$", re.IGNORECASE)
     recent_items_raw = []
@@ -412,7 +410,6 @@ def process_known_keys(nk_objects, vk_objects):
     userassist_raw = []
     userassist_list = []
 
-    #print('Looking for UserAssist items')
     for address, vk in vk_objects.items():
         if vk.nk_parent is None:
             key = '**UNKNOWN**'
@@ -436,9 +433,7 @@ def process_known_keys(nk_objects, vk_objects):
             recent_items_dict[vk.nk_parent.name] = temp_dict
         
     if userassist_raw:
-        print(f"UserAssist Items = {len(userassist_raw)}")
         for item in userassist_raw:
-            #print(item)
             data = item[4]
             if len(data) == 72:
                 ua_data = struct.unpack('<4i44xq4x', data) # https://github.com/PacktPublishing/Learning-Python-for-Forensics/blob/master/Chapter%206/userassist_parser.py
@@ -453,17 +448,47 @@ def process_known_keys(nk_objects, vk_objects):
                     'Focus Count': ua_data[2]}
                 )
     if userassist_list:
-        print('Path, Session ID, Count, Last Used Date, Focus Time (ms), Focus Count, Key Last Mod')
+        if print_to_screen:
+            print('')
+            print(f"[+] UserAssist Items = {len(userassist_list)}")
+            print('Path, Session ID, Count, Last Used Date, Focus Time (ms), Focus Count, KeyTimestamp')
+        if output_path:
+            create_table(output_path, "UserAssist", ('Path', 'Session ID', 'Used Count', 'Last Used Date', 'Focus Time (ms)', 'Focus Count', 'Key Last Mod'))
+        
+        list_to_write = []
         for i in userassist_list:
-            print(i['Path'], i['Session ID'], i['Count'], i['Last Used Date'], 
-                    i['Focus Time (ms)'], i['Focus Count'], i['key_mod_time'])
+            if print_to_screen:
+                print(i['Path'], i['Session ID'], i['Count'], i['Last Used Date'],
+                        i['Focus Time (ms)'], i['Focus Count'], i['key_mod_time'], sep=", ")
+            if output_path:
+                list_to_write.append((i['Path'], i['Session ID'], i['Count'], i['Last Used Date'],
+                                    i['Focus Time (ms)'], i['Focus Count'], i['key_mod_time']))
+        if output_path:
+            write_to_table(output_path, "UserAssist", list_to_write)
+            print(f'[+] Wrote {len(list_to_write)} UserAssist items to database')
 
-    # if recent_items_raw:
-    #     print(f"RecentItems = {len(recent_items_raw)}")
-    #     print("Path Arguments, DisplayName, LastAccessedTime, KeyTimestamp")
-    #     for k, v in recent_items_dict.items():
-    #         #print(k, v)
-    #         print(v['Path'][1], v['Arguments'][1], v['DisplayName'][1], v['LastAccessedTime'][1], v['Path'][2])
+    if recent_items_dict:
+        if print_to_screen:
+            print('')
+            print(f"[+] RecentItems = {len(recent_items_dict)}")
+            print("Path, Arguments, DisplayName, LastAccessedTime, KeyTimestamp")
+        if output_path:
+            create_table(output_path, "RecentItems", ('Path', 'Arguments', 'DisplayName', 'LastAccessedTime', 'KeyTimestamp'))
+        list_to_write = []
+        for k, v in recent_items_dict.items():
+            path = v['Path'][1].rstrip('\x00') if 'Path' in v else ''
+            args = v['Arguments'][1].rstrip('\x00') if 'Arguments' in v else ''
+            display_name = v['DisplayName'][1].rstrip('\x00') if 'DisplayName' in v else ''
+            last_accessed_name = v['LastAccessedTime'][1] if 'LastAccessedTime' in v else ''
+            
+            if print_to_screen:
+                print(path, args, display_name, last_accessed_name, v['Path'][2], sep=", ")
+            if output_path:
+                list_to_write.append((path, args, display_name, last_accessed_name, v['Path'][2]))
+
+        if output_path:
+            write_to_table(output_path, "RecentItems", list_to_write)
+            print(f'[+] Wrote {len(list_to_write)} RecentItems to database')
 
 def Filter(compiled_expression, str):
     if str:
@@ -488,6 +513,36 @@ def execute_query(cursor, query):
         print('[!] Error was', str(ex))
     return False
 
+def create_table(sqlite_path, table_name, columns):
+
+    conn = open_sqlite_db_conn(sqlite_path)
+    if not conn:
+        return False
+    
+    cursor = conn.cursor()
+    cols = ','.join((f'"{x}" TEXT' for x in columns))
+    create_query = f'CREATE TABLE "{table_name}" ({cols})'
+    if not execute_query(cursor, create_query):
+        return False
+
+    conn.commit()
+    conn.close()
+    return True
+
+def write_to_table(sqlite_path, table_name, rows):
+
+    conn = open_sqlite_db_conn(sqlite_path)
+    if not conn:
+        return False
+    
+    cursor = conn.cursor()
+    query = f'INSERT INTO "{table_name}" VALUES (?' + ',?'*(len(rows[0]) - 1) + ')'
+    insert_rows_into_db(cursor, query, table_name, rows)
+
+    conn.commit()
+    conn.close()
+    return True
+
 def insert_rows_into_db(cursor, exec_many_query, table_name, rows):
     try:
         cursor.executemany(exec_many_query, rows)
@@ -501,12 +556,12 @@ def add_to_sqlite_db(sqlite_path, vk_objects, nk_objects, user_assist_decode):
     print(f'[+] Created sqlite database at {sqlite_path}')
 
     cursor = conn.cursor()
-    createQuery = 'CREATE TABLE IF NOT EXISTS "RegKeys" (Id INTEGER NOT NULL PRIMARY KEY, Name TEXT, Path TEXT, LastWriteTime TEXT, SubkeyCount INTEGER, ValueCount INTEGER, NKoffset INTEGER)'
-    if not execute_query(cursor, createQuery):
+    create_query = 'CREATE TABLE IF NOT EXISTS "RegKeys" (Id INTEGER NOT NULL PRIMARY KEY, Name TEXT, Path TEXT, LastWriteTime TEXT, SubkeyCount INTEGER, ValueCount INTEGER, NKoffset INTEGER)'
+    if not execute_query(cursor, create_query):
         return False
 
-    createQuery = 'CREATE TABLE IF NOT EXISTS "RegValues" (Name TEXT, KeyId INTEGER, Type TEXT, ValueStr TEXT, ValueBin BLOB, ValueInt INTEGER, VKoffset INTEGER)'
-    if not execute_query(cursor, createQuery):
+    create_query = 'CREATE TABLE IF NOT EXISTS "RegValues" (Name TEXT, KeyId INTEGER, Type TEXT, ValueStr TEXT, ValueBin BLOB, ValueInt INTEGER, VKoffset INTEGER)'
+    if not execute_query(cursor, create_query):
         return False
 
     add_keys_query = 'INSERT INTO "RegKeys" VALUES (?,?,?,?,?,?,?)'
@@ -558,12 +613,6 @@ def add_to_sqlite_db(sqlite_path, vk_objects, nk_objects, user_assist_decode):
     conn.commit()
     conn.close()
     return True
-
-def insert_rows_into_db(cursor, exec_many_query, table_name, rows):
-    try:
-        cursor.executemany(exec_many_query.format(table_name), rows)
-    except sqlite3.Error as ex:
-        print(f'[!] Error inserting data to sqlite db table "{table_name}"')
 
 def FindPath(objects, node, path):
     if node.flags & 0xC == 0xC:
