@@ -142,16 +142,22 @@ def ReadWinFileTime(win64_timestamp): # FILETIME is 100ns ticks since 1601-1-1
     return ''
 
 def main():
-    description =  f"\nJARP version {__VERSION}\n (c) Yogesh Khatri 2023 @swiftforensics\n"
+
+    #f"\nJARP version {__VERSION}\n (c) Yogesh Khatri 2023 @swiftforensics\n"\
+    description =  \
+        f"  _  _  _  _ \n"\
+        "   //_//_//_/\n"\
+        f"(_// // \\/    v {__VERSION} (c) Yogesh Khatri 2023 @swiftforensics\n"
     epilog = 'Just Another (broken) Registry Parser (JARP) was created to read \n'\
             'registry files that were partially corrupted and/or encrypted. \n'\
             'JARP will write all recovered keys & values to an sqlite\n'\
-            'database and also output data on the console (if needed).\n'
+            'database and/or output recovered data on the console.\n\n'\
+            'The filter options only apply to the console output (-p option).'
     parser = argparse.ArgumentParser(
         description=description, epilog=epilog, 
         formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('reg_path', help='Path to registry hive (file)')
-    parser.add_argument('-o', '--output_path', help='Output file name and path')
+    parser.add_argument('-o', '--output_path', help='Output file name and path (for sqlite output)')
     parser.add_argument('-p', '--print_to_screen', action='store_true', help='Print output to screen')
     parser.add_argument('-n', '--no_UA_decode', action='store_true', help='Do NOT decode rot13 for UserAssist (Default is to decode)')
     parser.add_argument('-f', '--filter', help='Filter keys and values. Eg: -f "UserAssist"')

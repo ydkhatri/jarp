@@ -1,0 +1,349 @@
+//------------------------------------------------
+//--- 010 Editor v6.0.1 Binary Template
+//
+//      File: RegistryHive.bt
+//   Authors: Eric R. Zimmerman, Yogesh Khatri
+//    E-mail: saericzimmerman@gmail.com, yogesh@swiftforensics.com
+//   Version: 1.4
+//   Purpose: Parses Windows Registry hive structures. Includes Header, 
+//            nk, vk, sk, and list records.
+//  Category: Operating System
+// File Mask: *
+//  ID Bytes: 72 65 67 66 //regf
+//   History: 
+//   1.4   2023-01-28 Yogesh Khatri: Added reading of VK data and some DB records.
+//   1.3   2016-02-12 SweetScape Software: Updated header for repository submission.
+//   1.2   E Zimmerman: Public release.
+//------------------------------------------------
+
+LittleEndian();
+
+typedef struct {
+    int Size;
+    char Signature[2] <fgcolor=cBlack, bgcolor=0x00ff10>;
+    short Flags <format=binary>;
+    int IndirectBlockOffset;
+    int Unknown;
+} DBCELL <optimize=false>;
+
+typedef struct {
+    int Size;
+    int BlockOffset_1;
+    int BlockOffset_2;
+} DBIndirectBlock <optimize=false>;
+
+// Defines a header record
+typedef struct {
+    // Header for the file
+    char HeaderSignature[4] <fgcolor=cBlack, bgcolor=0x00ff00>; 
+    int PrimarySequenceNumber;
+    int SecondarySequenceNumber;
+    FILETIME LastWriteTime <fgcolor=cBlack, bgcolor=0xDFF4FF>;
+    int MajorVersion <fgcolor=cBlack, bgcolor=cLtRed>;
+    int MinorVersion <fgcolor=cBlack, bgcolor=cRed>;
+    int FileType;
+    int Unknown;
+    int RootKeyOffset <fgcolor=cBlack, bgcolor=cLtBlue>;
+    int HbinTotalSize <fgcolor=cBlack, bgcolor=cPurple, format=hex>;
+    int Unknown2;
+    wchar_t EmbeddedFilename[32] <fgcolor=cBlack, bgcolor=cLtGreen>;
+    char Unknown3[396];
+    int Checksum;
+
+} REGISTRYHEADER <size=4096> ;
+
+typedef struct (int recordSize) {
+    int Size;
+    char Signature[2] <fgcolor=cBlack, bgcolor=0x00ff10>;
+    short Flags <format=binary>;
+    FILETIME LastWriteTime <fgcolor=cBlack, bgcolor=0xDFF4FF>;
+    int Spare;
+    int ParentCellOffset;
+    int SubkeyCountStable <fgcolor=cBlack, bgcolor=cLtBlue>;
+    int SubkeyCountVolatile;
+    int SubkeyListOffsetStable <fgcolor=cBlack, bgcolor=cLtBlue>;
+    int SubkeyListOffsetVolatile;
+    int ValueCount <fgcolor=cWhite, bgcolor=cDkGray>;
+    int ValuelistOffset <fgcolor=cBlack, bgcolor=cGray>;
+    int SecurityKeyOffset;
+    int ClassOffset;
+    short MaxNameLength;
+    byte UserVirtFlags;
+    byte Debug;
+    int MaxClassLength;
+    int MaxValueNameLength;
+    int MaxValueDataLength;
+    int WorkVar;
+    short NameLength <fgcolor=cBlack, bgcolor=cAqua>;
+    short ClassLength;
+    char Name[NameLength] <fgcolor=cBlack, bgcolor=cLtAqua>;
+    local int PaddingSize = recordSize - 0x50 - NameLength;
+    if (PaddingSize > 0)
+    {
+        char Padding[recordSize - 0x50 - NameLength];
+    }
+  
+
+} NKCELL <read=ReadNKCell, optimize=false>;
+
+string ReadNKCell( NKCELL &nk )
+{
+     local string s;
+     SPrintf(s, "%s, %s", nk.Name, FileTimeToString(nk.LastWriteTime));
+     return s;
+}
+
+typedef struct (int recordSize) {
+    local uint pos;
+    int Size;
+    char Signature[2] <fgcolor=cBlack, bgcolor=0x00ff10>;      
+    short NameLength <fgcolor=cBlack, bgcolor=cAqua>;
+    int DataLength:28;
+    int Data_Flag:4;
+    int DataOffset;
+    int Type;
+    short Flags <format=binary>;
+    short Spare;
+    if (NameLength>0)
+    {
+        char Name[NameLength] <fgcolor=cBlack, bgcolor=cLtAqua>;
+    }
+    local int PaddingSize = recordSize - 0x18 - NameLength;
+    if (PaddingSize > 0)
+    {
+        char Padding [recordSize - 0x18 - NameLength];
+    }
+    if (DataOffset > 0 && DataLength > 0) // likely redundant now
+    {
+      pos = FTell();
+      FSeek(4096 + DataOffset);
+      if (!FEof()) {
+        if (Type == 1 || Type == 2 || Type == 7) {
+          FSkip(4);
+          wchar_t ValueStr[DataLength / 2];
+        }
+        else if (Type == 3) {
+          local int binSize = Abs(ReadInt());
+          local short type = ReadUShort(FTell() + 4);
+          if (type == 0x6264) { // "db"
+            DBCELL db;
+            FSeek(db.IndirectBlockOffset + 4096);
+            if (!FEof()) {
+              DBIndirectBlock ib;
+              Printf("%d\n", Abs(ib.Size));
+              FSeek(ib.BlockOffset_1 + 4096);
+              binSize = Abs(ReadInt());
+              FSkip(4);
+              byte ValueBin[DataLength];
+            }
+          }
+          else
+            byte ValueBin[DataLength];
+        }
+        else if (Type == 4) 
+          local uint ValueInt = DataOffset; // same applies to other types as well if data_flag=8, not implemented in above logic!
+        else if (Type == 11) {
+          FSkip(4);
+          uint64 ValueInt;
+        }
+      }
+      FSeek(pos);
+    }
+
+} VKCELL <read=ReadVKCell, optimize=false>;
+
+string ReadVKCell( VKCELL &vk )
+{
+    local string name = vk.NameLength ? vk.Name : "(Default)";
+    if (exists(vk.ValueStr))
+        return name + " -> " + vk.ValueStr;
+    else if (exists(vk.ValueInt)) {
+        local string s;
+        SPrintf(s, "%s -> %d", name, vk.ValueInt);
+        return s;
+    }
+    return name;
+}
+
+
+typedef struct (int recordSize) {
+    byte AceType;
+    byte AceFlags;
+    short AceSize;
+    int Mask <format=binary>;
+    char SID[AceSize - 8]; //account for 2 bytes, short, and int
+
+} ACE <optimize=false>;
+
+typedef struct (int recordSize) {
+    byte AclRevision;
+    byte Sbz1;
+    short AclSize;
+    short AceCount;
+    short Sbz2;
+    if (AclSize > 0)
+    {
+        local int aceSize = 0;
+        local int i;
+        for (i = 0; i < AceCount; i++)
+        {
+            aceSize=ReadInt(FTell()+2);
+            ACE Ace(aceSize);
+        }
+    }
+
+} ACL  <optimize=false>;
+
+typedef struct (int recordSize) {
+    byte Revision;
+    byte Spare;
+    short ControlFlag <format=binary>;
+    int OffsetToOwner;
+    int OffsetToGroup;
+    int OffsetToSACL;
+    int OffsetToDACL;
+    
+    local int sizeSACL = OffsetToDACL - OffsetToSACL;
+    local int sizeDACL = OffsetToOwner - OffsetToDACL;
+    local int sizeOwnerSid = OffsetToGroup - OffsetToOwner;
+    local int sizeGroupSid = recordSize - OffsetToGroup;
+    
+    if ((ControlFlag & 0x010) == 0x010) //0x010 == SeSaclPresent
+    {
+        ACL SACL(sizeSACL);
+    }
+    if ((ControlFlag & 0x004) == 0x004) //0x004 == SeDaclPresent
+    {
+        ACL DACL(sizeDACL);
+    }
+    char OwnerSID[sizeOwnerSid];
+    char GroupSID[sizeGroupSid];
+} DESCRIPTOR <optimize=false>;
+
+typedef struct (int recordSize) {
+    int Size;
+    char Signature[2] <fgcolor=cBlack, bgcolor=0x00ff10>;      
+    short Reserved;
+    int Flink;
+    int Blink;
+    int ReferenceCount;
+    int DescriptorLength;
+    if (DescriptorLength)
+    {
+        DESCRIPTOR Descriptor(DescriptorLength);
+    }
+    
+    local int PaddingSize = recordSize - 0x18 - DescriptorLength;
+    if (PaddingSize > 0)
+    {
+        char Padding[recordSize - 0x18 - DescriptorLength];
+    }
+    
+} SKCELL <optimize=false>;
+
+typedef struct  {
+    int Offset;
+    char Hash[4];
+    
+} LXOFFSET <optimize=false>;
+
+typedef struct (int recordSize) {
+    int Size;
+    char Signature[2] <fgcolor=cBlack, bgcolor=0x00ff10>;      
+    short NumberOfOffsets;
+    if (NumberOfOffsets > 0)
+    {
+        LXOFFSET offsets[NumberOfOffsets];
+    }
+    
+    local int PaddingSize = recordSize-8-(8*NumberOfOffsets);
+    if (PaddingSize > 0)
+    {
+        char Padding[recordSize-8-(8*NumberOfOffsets)];
+    }
+      
+} LXLIST <optimize=false>;
+
+typedef struct (int recordSize) {
+    int Size;
+    char Signature[2] <fgcolor=cBlack, bgcolor=0x00ff10>;    
+    short NumberOfOffsets;  
+    LXOFFSET offsets[NumberOfOffsets];   
+    
+} LILIST <optimize=false>;
+
+typedef struct {
+    char HbinSignature[4] <fgcolor=cBlack, bgcolor=0x00ff10>; 
+    int RelativeOffset;
+    int SizeOfHbin;
+    int Unknown1;
+    int Unknown2;
+    FILETIME Timestamp <fgcolor=cBlack, bgcolor=0xDFF4FF>;
+    int unknown3;
+
+    local string sig;
+
+    local int index = 0;
+
+    local int cellSize = ReadInt(FTell());
+
+    while (index < SizeOfHbin)
+    {
+        sig = GetCellSignature();
+
+        cellSize = ReadInt(FTell());
+
+        if (cellSize == 0)
+        {
+            break; //safety net
+        }
+
+        switch( sig ) 
+        {
+            case "nk"  : NKCELL nk(Abs(cellSize)); break;
+            case "sk"  : SKCELL sk(Abs(cellSize)); break;
+            case "vk"  : VKCELL vk(Abs(cellSize)); break;
+            case "li"  : LILIST li(Abs(cellSize)); break;
+            case "lf"  : LXLIST lf(Abs(cellSize)); break;
+            case "lh"  : LXLIST lh(Abs(cellSize)); break;
+            default : 
+            //Printf("Sig = %s \n",sig); //print out signatures of unknowns
+            FSkip(Abs(cellSize)); //skip data cells
+        } 
+    
+        index+=Abs(cellSize);
+    }
+
+} HBINRECORD <size=SizeHbinRecord, optimize=false>;
+
+int SizeHbinRecord( HBINRECORD &r)
+{
+    return ReadInt(startof(r)+8);
+}
+
+char[] GetCellSignature()
+{
+    //Read 4 bytes away from current to get the signature string
+    return ReadString(FTell() + 4, 2);
+}
+
+if (ReadInt(0) == 0x66676572) // regf
+    REGISTRYHEADER Header <bgcolor=cLtPurple>;
+else 
+    FSeek(4096); // skip corrupt header
+
+local int indexPosition = FTell();
+
+local int indexPosStart = indexPosition;
+
+while (!FEof())
+{
+    if (ReadInt(FTell()) != 0x6E696268) { // hbin
+      FSkip(4096);
+      continue;
+    }
+    HBINRECORD Hbin ;
+
+    indexPosition+= Hbin.SizeOfHbin;
+
+}
