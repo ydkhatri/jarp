@@ -21,7 +21,7 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = "0.6.2"
+__VERSION = "0.7"
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -162,6 +162,7 @@ def main():
     parser.add_argument('-n', '--no_UA_decode', action='store_true', help='Do NOT decode rot13 for UserAssist (Default is to decode)')
     parser.add_argument('-f', '--filter', help='Filter keys and values. Eg: -f "UserAssist"')
     parser.add_argument('-r', '--regex_filter', help='Filter keys and values with regex. Eg: -f "User[a-zA-Z]+"')
+    parser.add_argument('-k', '--parse_known_keys', action='store_true', help='Read and parse UserAssist, RecentItems, Terminal Server Client, WordWheelQuery')
     args = parser.parse_args()
 
     input_path = args.reg_path
@@ -171,6 +172,10 @@ def main():
     if args.filter or args.regex_filter:
         if not args.print_to_screen:
             print('[!] Cannot use filter without -p (--print_to_screen) option. ')
+            print('[!] Exiting..')
+            return
+        if args.parse_known_keys:
+            print('[!] Cannot use filter with -k (--parse_known_keys) option. ')
             print('[!] Exiting..')
             return
         if args.filter:
@@ -191,9 +196,9 @@ def main():
         print("[!] Exiting..")
         return
 
-    if not output_path and not args.print_to_screen:
+    if not output_path and not args.print_to_screen and not args.parse_known_keys:
         #output_path = input_path + '.sqlite.db'
-        print("[!] Either provide an output_path (-o) to save to sqlite, or select print_to_screen (-p) option")
+        print("[!] Either provide an output_path (-o) to save to sqlite, or select print_to_screen (-p) option, or choose parse_known_keys (-k) option")
         print("[!] Exiting..")
         return
 
@@ -206,7 +211,7 @@ def main():
             print("[!] Exiting..")
             return
 
-    ProcessRegistryHive(input_path, output_path, not args.no_UA_decode, args.print_to_screen, filter)
+    ProcessRegistryHive(input_path, output_path, not args.no_UA_decode, args.print_to_screen, filter, args.parse_known_keys)
 
 def read_struct_size(f):
     """Read 4 bytes as size and return file pointer back to initial position"""
@@ -216,7 +221,7 @@ def read_struct_size(f):
     f.seek(pos)
     return size
 
-def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_screen, filter):
+def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_screen, filter, parse_known_keys):
     all_pattern = b'\xFF\xFF(v|n)k'
 
     vk_objects = {}
@@ -365,6 +370,9 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
         if output_path:
             add_to_sqlite_db(output_path, vk_objects, nk_objects, user_assist_decode)
             print('[+] Sqlite db writing completed')
+        
+        if parse_known_keys:
+            process_known_keys(nk_objects, vk_objects)
 
         # PRINT results
         if print_to_screen:
@@ -394,6 +402,68 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                     count += 1
             if filter:
                 print(f'[+] {count} items matched filter "{filter.pattern}"')
+
+def process_known_keys(nk_objects, vk_objects):
+
+    recent_items_filter = re.compile("{[a-zA-Z0-9\\-]{36}}/RecentItems/{[a-zA-Z0-9\\-]{36}}$", re.IGNORECASE)
+    recent_items_raw = []
+    recent_items_dict = {}
+
+    userassist_raw = []
+    userassist_list = []
+
+    #print('Looking for UserAssist items')
+    for address, vk in vk_objects.items():
+        if vk.nk_parent is None:
+            key = '**UNKNOWN**'
+            timestamp = ''
+        else:
+            key = f'{vk.nk_parent.path}/{vk.nk_parent.name}'
+            timestamp = ReadWinFileTime(vk.nk_parent.last_write_time)
+        value_name = vk.name
+        value = vk.value
+        if vk.value_type == RegTypes.RegMultiSZ:
+            value = vk.value.rstrip('\x00')
+
+        if re.search('UserAssist/{[^}]*}/Count', key):
+            value_name = rot13(value_name)
+            userassist_raw.append((vk.nk_parent.path, vk.nk_parent.name, value_name, vk.value_type, value, timestamp))
+        
+        if Filter(recent_items_filter, key):
+            recent_items_raw.append((vk.nk_parent.path, vk.nk_parent.name, value_name, vk.value_type, value, timestamp))
+            temp_dict = recent_items_dict.get(vk.nk_parent.name, {})
+            temp_dict[value_name] = (vk.value_type, value, timestamp)
+            recent_items_dict[vk.nk_parent.name] = temp_dict
+        
+    if userassist_raw:
+        print(f"UserAssist Items = {len(userassist_raw)}")
+        for item in userassist_raw:
+            #print(item)
+            data = item[4]
+            if len(data) == 72:
+                ua_data = struct.unpack('<4i44xq4x', data) # https://github.com/PacktPublishing/Learning-Python-for-Forensics/blob/master/Chapter%206/userassist_parser.py
+                userassist_list.append({
+                    'Key': item[0] + '/' + item[1],
+                    'Path': item[2],
+                    'key_mod_time': item[5],
+                    'Session ID': ua_data[0],
+                    'Count': ua_data[1],
+                    'Last Used Date': ReadWinFileTime(ua_data[4]),
+                    'Focus Time (ms)': ua_data[3],
+                    'Focus Count': ua_data[2]}
+                )
+    if userassist_list:
+        print('Path, Session ID, Count, Last Used Date, Focus Time (ms), Focus Count, Key Last Mod')
+        for i in userassist_list:
+            print(i['Path'], i['Session ID'], i['Count'], i['Last Used Date'], 
+                    i['Focus Time (ms)'], i['Focus Count'], i['key_mod_time'])
+
+    # if recent_items_raw:
+    #     print(f"RecentItems = {len(recent_items_raw)}")
+    #     print("Path Arguments, DisplayName, LastAccessedTime, KeyTimestamp")
+    #     for k, v in recent_items_dict.items():
+    #         #print(k, v)
+    #         print(v['Path'][1], v['Arguments'][1], v['DisplayName'][1], v['LastAccessedTime'][1], v['Path'][2])
 
 def Filter(compiled_expression, str):
     if str:
