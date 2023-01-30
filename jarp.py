@@ -424,12 +424,12 @@ def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
 
         if re.search('UserAssist/{[^}]*}/Count', key):
             value_name = rot13(value_name)
-            userassist_raw.append((vk.nk_parent.path, vk.nk_parent.name, value_name, vk.value_type, value, timestamp))
+            userassist_raw.append((vk.nk_parent.path, vk.nk_parent.name, value_name, vk.value_type, value, timestamp, key))
         
         if Filter(recent_items_filter, key):
-            recent_items_raw.append((vk.nk_parent.path, vk.nk_parent.name, value_name, vk.value_type, value, timestamp))
+            recent_items_raw.append((vk.nk_parent.path, vk.nk_parent.name, value_name, vk.value_type, value, timestamp, key))
             temp_dict = recent_items_dict.get(vk.nk_parent.name, {})
-            temp_dict[value_name] = (vk.value_type, value, timestamp)
+            temp_dict[value_name] = (vk.value_type, value, timestamp, key)
             recent_items_dict[vk.nk_parent.name] = temp_dict
         
     if userassist_raw:
@@ -453,7 +453,7 @@ def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
             print(f"[+] UserAssist Items = {len(userassist_list)}")
             print('Path, Session ID, Count, Last Used Date, Focus Time (ms), Focus Count, KeyTimestamp')
         if output_path:
-            create_table(output_path, "UserAssist", ('Path', 'Session ID', 'Used Count', 'Last Used Date', 'Focus Time (ms)', 'Focus Count', 'Key Last Mod'))
+            create_table(output_path, "UserAssist", ('Path', 'Session ID', 'Used Count', 'Last Used Date', 'Focus Time (ms)', 'Focus Count', 'Key Last Mod', 'Key'))
         
         list_to_write = []
         for i in userassist_list:
@@ -462,7 +462,7 @@ def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
                         i['Focus Time (ms)'], i['Focus Count'], i['key_mod_time'], sep=", ")
             if output_path:
                 list_to_write.append((i['Path'], i['Session ID'], i['Count'], i['Last Used Date'],
-                                    i['Focus Time (ms)'], i['Focus Count'], i['key_mod_time']))
+                                    i['Focus Time (ms)'], i['Focus Count'], i['key_mod_time'], i['Key']))
         if output_path:
             write_to_table(output_path, "UserAssist", list_to_write)
             print(f'[+] Wrote {len(list_to_write)} UserAssist items to database')
@@ -473,7 +473,7 @@ def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
             print(f"[+] RecentItems = {len(recent_items_dict)}")
             print("Path, Arguments, DisplayName, LastAccessedTime, KeyTimestamp")
         if output_path:
-            create_table(output_path, "RecentItems", ('Path', 'Arguments', 'DisplayName', 'LastAccessedTime', 'KeyTimestamp'))
+            create_table(output_path, "RecentItems", ('Path', 'Arguments', 'DisplayName', 'LastAccessedTime', 'KeyTimestamp', 'Key'))
         list_to_write = []
         for k, v in recent_items_dict.items():
             path = v['Path'][1].rstrip('\x00') if 'Path' in v else ''
@@ -484,7 +484,7 @@ def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
             if print_to_screen:
                 print(path, args, display_name, last_accessed_name, v['Path'][2], sep=", ")
             if output_path:
-                list_to_write.append((path, args, display_name, last_accessed_name, v['Path'][2]))
+                list_to_write.append((path, args, display_name, last_accessed_name, v['Path'][2], v['Path'][3]))
 
         if output_path:
             write_to_table(output_path, "RecentItems", list_to_write)
