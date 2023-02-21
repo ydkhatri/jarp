@@ -67,7 +67,8 @@ The filter options only apply to the console output (-p option).
 ```
 
 ## Other tools
-The repo also hosts an updated 010 template which can read reg hives without the
+The repo also hosts an updated [010](https://www.sweetscape.com/010editor/) 
+template which can read reg hives without the
 valid header "regf". This builds upon the work of Eric Zimmerman who wrote the 
 first verion of this template. This was used to study the corrupted hives and 
 build JARP.
