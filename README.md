@@ -123,6 +123,19 @@ ID, Search Term, KeyTimestamp
 5, mstsc, 2023-02-06 23:48:16.597754
 1, psexec, 2023-02-06 23:48:16.597754
 ```
+3. Get everything, write to Sqlite db
+```
+% python3 jarp.py -k -o /Users/ykhatri/Downloads/jarp_output.sqlite NTUSER.DAT
+[-] File /Users/ykhatri/Downloads/jarp_output.sqlite already exists, trying to delete it.
+[+] Read 4596 NK objects and 14513 VK objects
+[+] Located path for 14513 vk entries, 0 vk are orphan, 0 vk not present in file
+[+] Created sqlite database at /Users/ykhatri/Downloads/jarp_output.sqlite
+[!] Error inserting data to sqlite db table "RegValues"
+[+] Reg data written to Sqlite db
+[+] Wrote 149 UserAssist items to database
+[+] Wrote 34 RecentItems to database
+[+] Wrote 35 WordWheelQuery items to database
+```
 
 ## Other tools
 The repo also hosts an updated [010](https://www.sweetscape.com/010editor/) 
