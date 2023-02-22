@@ -67,7 +67,7 @@ The filter options only apply to the console output (-p option).
 ```
 
 ## Examples
-Looking for RDP (mstsc) usage
+1. Looking for RDP (mstsc) usage
 ```
 % python3 jarp.py -p -f "Terminal server client/server" ./test_hives/NTUSER.DAT
 [+] Read 2010 NK objects and 3339 VK objects
@@ -80,9 +80,9 @@ KeyPath, ValueName, RegType, KeyLastModifiedDate
 **UNKNOWN**/Terminal Server Client/Servers/twtd-d10-hv14, UsernameHint, RegSZ, twtd\marion, key_mod_date=2022-12-19 04:39:53.082502
 [+] 5 items matched filter "Terminal\ server\ client/server" 
 ```
-Parse known artifacts (-k), this parses UserAssist, RecentItems and WordWheelQuery
+2. Parse known artifacts (-k), this parses UserAssist, RecentItems and WordWheelQuery
 ```
-% python jarp.py -p -k /Users/ykhatri/Downloads/NTUSER.DAT
+% python3 jarp.py -p -k /Users/ykhatri/Downloads/NTUSER.DAT
 [+] Read 2010 NK objects and 3339 VK objects
 [+] Located path for 3281 vk entries, 58 vk are orphan, 4 vk not present in file
 
