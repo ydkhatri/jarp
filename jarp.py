@@ -319,9 +319,9 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                         elif vk.type == RegTypes.RegMultiSZ: # 7
                             data_interpreted = data.decode('UTF-16LE', 'ignore')#.replace('\x00', '\n').rstrip('\n')
                         elif vk.type == RegTypes.RegDWord: # 4
-                            data_interpreted = struct.unpack('<I', data[0:4])[0]
+                            data_interpreted = struct.unpack('<i', data[0:4])[0]
                         elif vk.type == RegTypes.RegQWord: # 11
-                            data_interpreted = struct.unpack('<Q', data[0:8])[0]
+                            data_interpreted = struct.unpack('<q', data[0:8])[0]
                 if vk.type not in (0, 1, 2, 3, 4, 7, 11):
                     print(f"[-] Type not seen before type={vk.type}, name={name}, data={data}, offset={start_pos}")
 
