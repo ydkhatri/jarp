@@ -140,5 +140,5 @@ ID, Search Term, KeyTimestamp
 The repo also hosts an updated [010](https://www.sweetscape.com/010editor/) 
 template which can read reg hives without the valid header "regf" and adds 
 reading of Reg Values as well. This builds upon the work of Eric Zimmerman who wrote the 
-first verion of this template. This was used to study the corrupted hives and 
+first version of this template. This was used to study the corrupted hives and 
 build JARP.
