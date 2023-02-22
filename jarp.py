@@ -21,7 +21,7 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = "0.8"
+__VERSION = "0.8.1"
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -39,6 +39,13 @@ class RegTypes(IntEnum):
     RegResourceRequirementsList = 0xA
     RegQWord = 0xB
     RegFileTime = 0x10
+
+    @staticmethod
+    def GetName(reg_type):
+        try:
+            return RegTypes(reg_type).name
+        except ValueError:
+            return f"Unknown type 0x{reg_type:X}"
 
 NKCELL = Struct(
     "size" / Int32sl,
@@ -77,7 +84,8 @@ VKCELL = Struct(
         "length" / BitsInteger(28))
         ),
     "data_offset" / Int32ul,
-    "type" / Int32ul,
+    "type" / Int16ul,
+    "reserved" / Int16ul,
     "flags" / Int16ul,
     "spare" / Int16ul
     # followed by Name string
@@ -315,7 +323,7 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                         elif vk.type == RegTypes.RegQWord: # 11
                             data_interpreted = struct.unpack('<Q', data[0:8])[0]
                 if vk.type not in (0, 1, 2, 3, 4, 7, 11):
-                    print("[-] Type not seen before", vk.type, name, data)
+                    print(f"[-] Type not seen before type={vk.type}, name={name}, data={data}, offset={start_pos}")
 
                 vk_cell = VkCell(vk.flags, name, vk.data_length.length, vk.data_offset, vk.type, data_interpreted, start_pos)
                 vk_objects[start_pos - 4096] = vk_cell
@@ -396,7 +404,7 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                         (vk.value_type in (RegTypes.RegExpandSZ, RegTypes.RegSZ, RegTypes.RegMultiSZ) and \
                         Filter(filter, value))\
                     ):
-                    print(key, value_name, RegTypes(vk.value_type).name, value, f"key_mod_date={timestamp}", sep=", ")
+                    print(key, value_name, RegTypes.GetName(vk.value_type), value, f"key_mod_date={timestamp}", sep=", ")
                     count += 1
             if filter:
                 print(f'[+] {count} items matched filter "{filter.pattern}"')
@@ -621,7 +629,7 @@ def add_to_sqlite_db(sqlite_path, vk_objects, nk_objects, user_assist_decode):
                 value_int = vk.value
             elif vk.value_type == RegTypes.RegBin:
                 value_blob = vk.value
-        rows.append((name, id, RegTypes(vk.value_type).name, value_str, value_blob, value_int, vk.file_offset))
+        rows.append((name, id, RegTypes.GetName(vk.value_type), value_str, value_blob, value_int, vk.file_offset))
     insert_rows_into_db(cursor, add_values_query, 'RegValues', rows)
     
     # create view
