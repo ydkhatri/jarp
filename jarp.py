@@ -21,7 +21,7 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = "0.7.2"
+__VERSION = "0.8"
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -161,7 +161,7 @@ def main():
     parser.add_argument('-n', '--no_UA_decode', action='store_true', help='Do NOT decode rot13 for UserAssist (Default is to decode)')
     parser.add_argument('-f', '--filter', help='Filter keys and values. Eg: -f "UserAssist"')
     parser.add_argument('-r', '--regex_filter', help='Filter keys and values with regex. Eg: -f "User[a-zA-Z]+"')
-    parser.add_argument('-k', '--parse_known_keys', action='store_true', help='Read and parse UserAssist & RecentItems')
+    parser.add_argument('-k', '--parse_known_keys', action='store_true', help='Read and parse UserAssist, RecentItems, WordWheelQuery')
     args = parser.parse_args()
 
     input_path = args.reg_path
@@ -410,6 +410,9 @@ def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
     userassist_raw = []
     userassist_list = []
 
+    wordwheelquery_list = []
+    wordwheelquery_mrulist = ''
+
     for address, vk in vk_objects.items():
         if vk.nk_parent is None:
             key = '**UNKNOWN**'
@@ -426,12 +429,24 @@ def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
             value_name = rot13(value_name)
             userassist_raw.append((vk.nk_parent.path, vk.nk_parent.name, value_name, vk.value_type, value, timestamp, key))
         
+        if re.search('/WordWheelQuery$', key) and vk.value_type == RegTypes.RegBin:
+            if value_name == 'MRUListEx':
+                item_count = len(value) // 4
+                if item_count > 0:
+                    items = list(struct.unpack(f'<{item_count}I', value))
+                    if items[-1] == 4294967295:
+                        del items[-1]
+                    wordwheelquery_mrulist = ", ".join((str(x) for x in items))
+            else:
+                searched_term = value.decode('utf8', 'ignore')
+                wordwheelquery_list.append((value_name, searched_term, timestamp, key))
+
         if Filter(recent_items_filter, key):
             recent_items_raw.append((vk.nk_parent.path, vk.nk_parent.name, value_name, vk.value_type, value, timestamp, key))
             temp_dict = recent_items_dict.get(vk.nk_parent.name, {})
             temp_dict[value_name] = (vk.value_type, value, timestamp, key)
             recent_items_dict[vk.nk_parent.name] = temp_dict
-        
+
     if userassist_raw:
         for item in userassist_raw:
             data = item[4]
@@ -489,6 +504,23 @@ def process_known_keys(nk_objects, vk_objects, print_to_screen, output_path):
         if output_path:
             write_to_table(output_path, "RecentItems", list_to_write)
             print(f'[+] Wrote {len(list_to_write)} RecentItems to database')
+
+    if wordwheelquery_list:
+        if print_to_screen:
+            print('')
+            print(f"[+] WordWheelQuery Items = {len(wordwheelquery_list)}")
+            print('MRU order', wordwheelquery_mrulist)
+            print('ID, Search Term, KeyTimestamp')
+        if output_path:
+            create_table(output_path, "WordWheelQuery", ('ID', 'Search Term', 'Key Last Mod', 'Key'))
+        
+        for i in wordwheelquery_list:
+            if print_to_screen:
+                print(i[0], i[1], i[2], sep=", ")
+
+        if output_path:
+            write_to_table(output_path, "WordWheelQuery", wordwheelquery_list)
+            print(f'[+] Wrote {len(wordwheelquery_list)} WordWheelQuery items to database')
 
 def Filter(compiled_expression, str):
     if str:
