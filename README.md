@@ -17,7 +17,7 @@ pip3 install construct
 ## Purpose
 We encountered some strains of ransomware that would encrypt the Windows 
 registry NTUSER.DAT files, however the ransomware would only encrypt the 
-first few KBs of the file and in some instances bands of a few other KB 
+first few KBs of the file and in some instances a few bands of a few KB 
 throughout the file. This meant there was still a lot of data that was
 salvageable and usable but no tools would mount these hives. So I wrote
 JARP primarily to enhance my understanding of how the windows registry
