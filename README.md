@@ -130,7 +130,6 @@ ID, Search Term, KeyTimestamp
 [+] Read 4596 NK objects and 14513 VK objects
 [+] Located path for 14513 vk entries, 0 vk are orphan, 0 vk not present in file
 [+] Created sqlite database at /Users/ykhatri/Downloads/jarp_output.sqlite
-[!] Error inserting data to sqlite db table "RegValues"
 [+] Reg data written to Sqlite db
 [+] Wrote 149 UserAssist items to database
 [+] Wrote 34 RecentItems to database
