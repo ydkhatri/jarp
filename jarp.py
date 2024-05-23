@@ -21,7 +21,7 @@ from construct import *
 from construct.core import Int32ul, Int64ul, Int16ul, Int8ul, Int32sl
 from enum import IntEnum
 
-__VERSION = "0.8.1"
+__VERSION = "0.8.2"
 
 rot13 = lambda x : codecs.getencoder("ROT-13")(x)[0]
 
@@ -248,7 +248,7 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                 vk_data = f.read(size)
                 vk = VKCELL.parse(vk_data)
                 if vk.name_length > 0:
-                    name = vk_data[24 : 24 + vk.name_length].decode('utf8')
+                    name = vk_data[24 : 24 + vk.name_length].decode('utf8', 'ignore')
                 else:
                     name = ''
 
@@ -332,7 +332,7 @@ def ProcessRegistryHive(input_path, output_path, user_assist_decode, print_to_sc
                 nk_data = f.read(size)
                 nk = NKCELL.parse(nk_data)
                 if nk.name_length > 0:
-                    name = nk_data[80 : 80 + nk.name_length].decode('utf8')
+                    name = nk_data[80 : 80 + nk.name_length].decode('utf8', 'ignore')
                     nk_cell = NkCell(nk.flags, nk.last_write_time, nk.parent_cell_offset, nk.subkey_count_stable,
                                     nk.subkey_list_offset_stable, nk.value_count, nk.value_list_offset,
                                     nk.security_key_offset, name, start_pos)
